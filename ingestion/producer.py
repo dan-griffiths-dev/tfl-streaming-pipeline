@@ -2,18 +2,18 @@
 # ingestion/producer.py -  ingestion TfL API - producer.py - Kafka topic
 from datetime import datetime, timezone
 import json
-# import time
+import time
 
 # from loguru import logger
 from confluent_kafka import Producer
 import requests
 
 
-from tfl.config import (
+from config import (
     KAFKA_BROKER,
-    # KAFKA_TOPIC_RAW,
+    KAFKA_TOPIC_RAW,
     # LOG_LEVEL,
-    # POLL_INTERVAL_SEC,
+    POLL_INTERVAL_SEC,
     TFL_URL,
 )
 
@@ -29,11 +29,16 @@ from tfl.config import (
 # --- Kafka delivery callback ---
 # confluent-kafka is async, queues msgs and sends in the background
 # when Kafka acknowledges/denies a msg, the function is called automatically . Without it, I wouldn't know if something is dropped.
-# def _on_delivery(err, msg) -> None:
-#     if err:
-#         logger.error(f"Kafka delivery failed. Reason: {err}")
-#     else:
-#         logger.debug(f"Delivered to {msg.topic()} [{msg.partition()}]")
+def _on_delivery(err, msg) -> None:
+    if err:
+        # logger.error(f"Kafka delivery failed. Reason: {err}")
+        print(f"Kafka delivery failed. Reason: {err}")
+
+    else:
+        # logger.debug(f"Delivered to {msg.topic()} [{msg.partition()}]")
+        print(f"Delivered to {msg.topic()} [{msg.partition()}]")
+
+
 
 
 # --- TFL API ---
@@ -137,20 +142,22 @@ def run_producer() -> None:
             record = normalise_arrival(arrival)
 
             # key represents a bus approaching the same stop on the same line across each api poll
-            arrival_id = f"{record['line_id']}:{record['naptan_id']}:{record['vehicle_id']}",
+            arrival_id = f"{record['line_id']}:{record['naptan_id']}:{record['vehicle_id']}"
             
             # produce() is non-blocking, it puts msg in an internal queue
+          
+
             producer.produce(
                 topic=KAFKA_TOPIC_RAW,
                 key=arrival_id,
-                value=json.dumps(arrival),
-                callback=_on_delivery,
+                value=json.dumps(record),
+                callback=_on_delivery
             )
             producer.poll(0)         # poll(0) gives Kafka a chance to send what was put in the queue.
 
-            
-    # logger.info(f"Sleeping {POLL_INTERVAL_SEC}s until next poll")
-    # time.sleep(POLL_INTERVAL_SEC)
+        producer.flush()
+        # logger.info(f"Sleeping {POLL_INTERVAL_SEC}s until next poll")
+        time.sleep(POLL_INTERVAL_SEC)
 
 
 
