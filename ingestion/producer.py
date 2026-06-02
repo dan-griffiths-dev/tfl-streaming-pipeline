@@ -1,22 +1,21 @@
 
 # ingestion/producer.py -  ingestion TfL API - producer.py - Kafka topic
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 # import time
 
 # from loguru import logger
-# from confluent_kafka import Producer
+from confluent_kafka import Producer
 import requests
 
 
-# from config import (
-#     # KAFKA_BROKER,
-#     # KAFKA_TOPIC_RAW,
-#     # LOG_LEVEL,
-#     # POLL_INTERVAL_SEC,
-#     # TFL_URL,
-# )
-TFL_URL = "https://api.tfl.gov.uk/line/46/arrivals"     # filtered to Bus Route 46 while prototyping
+from tfl.config import (
+    KAFKA_BROKER,
+    # KAFKA_TOPIC_RAW,
+    # LOG_LEVEL,
+    # POLL_INTERVAL_SEC,
+    TFL_URL,
+)
 
 
 # --- Logging ---
@@ -73,6 +72,26 @@ def print_arrivals(arrivals: list[dict], limit: int = 10) -> None:
             f"{format_time(row['expectedArrival']):>8}"
         )
 
+def normalise_arrival(row: dict) -> dict:
+    """ normalised data avoids the full raw data object being processed by kafka """
+    return {
+        "source_prediction_id": row.get("id"),
+        "vehicle_id": row.get("vehicleId"),
+        "line_id": row.get("lineId"),
+        "line_name": row.get("lineName"),
+        "trip_id": row.get("tripId"),
+        "naptan_id": row.get("naptanId"),
+        "station_name": row.get("stationName"),
+        "platform_name": row.get("platformName"),
+        "direction": row.get("direction"),
+        "destination_name": row.get("destinationName"),
+        "time_to_station": row.get("timeToStation"),
+        "expected_arrival": row.get("expectedArrival"),
+        "api_timestamp": row.get("timestamp"),
+        "mode_name": row.get("modeName"),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 # --- TFL API ---
 # def fetch_predictions(headers: dict) -> list[dict]:
 def fetch_arrivals() -> list[dict]:
@@ -104,7 +123,7 @@ def run_producer() -> None:
     Flow per poll cycle:
     fetch_events() produce() to Kafka -> sleep.
     """
-    # producer = Producer({"bootstrap.servers": KAFKA_BROKER})
+    producer = Producer({"bootstrap.servers": KAFKA_BROKER})
     # headers = _build_headers()
 
     # logger.info(f"Producer started | Broker: {KAFKA_BROKER} | TFL: {auth_status}")
@@ -113,14 +132,14 @@ def run_producer() -> None:
     while True:
         arrivals = fetch_arrivals()
         print_arrivals(arrivals[:4])
-        import sys
-        sys.exit()
-
-
+    
         for arrival in arrivals:
-            arrival_id = arrival.get("id")
+            record = normalise_arrival(arrival)
+
+            # key represents a bus approaching the same stop on the same line across each api poll
+            arrival_id = f"{record['line_id']}:{record['naptan_id']}:{record['vehicle_id']}",
+            
             # produce() is non-blocking, it puts msg in an internal queue
-           
             producer.produce(
                 topic=KAFKA_TOPIC_RAW,
                 key=arrival_id,
@@ -129,7 +148,7 @@ def run_producer() -> None:
             )
             producer.poll(0)         # poll(0) gives Kafka a chance to send what was put in the queue.
 
-
+            
     # logger.info(f"Sleeping {POLL_INTERVAL_SEC}s until next poll")
     # time.sleep(POLL_INTERVAL_SEC)
 
