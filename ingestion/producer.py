@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 import time
 
-# from loguru import logger
+from loguru import logger
 from confluent_kafka import Producer
 import requests
 
@@ -12,33 +12,33 @@ import requests
 from config import (
     KAFKA_BROKER,
     KAFKA_TOPIC_RAW,
-    # LOG_LEVEL,
+    LOG_LEVEL,
     POLL_INTERVAL_SEC,
     TFL_URL,
 )
 
 
 # --- Logging ---
-# logger.remove()  # Removes default handler
-# logger.add(
-#     sink=lambda msg: print(msg, end=""),
-#     level=LOG_LEVEL,
-#     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | {message}",
-# )
+logger.remove()  # Removes default handler
+logger.add(
+    sink=lambda msg: print(msg, end=""),
+    level=LOG_LEVEL,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | {message}",
+)
 
 # --- Kafka delivery callback ---
 # confluent-kafka is async, queues msgs and sends in the background
-# when Kafka acknowledges/denies a msg, the function is called automatically . Without it, I wouldn't know if something is dropped.
+# when Kafka acknowledges/denies a msg, the function is called automatically . Without it, wouldn't know if something is dropped.
 def _on_delivery(err, msg) -> None:
     if err:
-        # logger.error(f"Kafka delivery failed. Reason: {err}")
-        print(f"Kafka delivery failed. Reason: {err}")
+        logger.error(f"Kafka delivery failed. Reason: {err}")
 
     else:
-        # logger.debug(f"Delivered to {msg.topic()} [{msg.partition()}]")
-        print(f"Delivered to {msg.topic()} [{msg.partition()}]")
-
-
+        logger.trace(
+            f"Delivered | Topic={msg.topic()} "
+            f"Partition={msg.partition()} "
+            f"Offset={msg.offset()}"
+        )
 
 
 # --- TFL API ---
@@ -48,6 +48,7 @@ def _on_delivery(err, msg) -> None:
 #     if TFL_PRIMARY_TOKEN:
 #         headers["Authorization"] = f"Bearer {TFL_PRIMARY_TOKEN}"
 #     return headers
+
 
 def format_time(iso_timestamp: str) -> str:
     dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
@@ -78,7 +79,7 @@ def print_arrivals(arrivals: list[dict], limit: int = 10) -> None:
         )
 
 def normalise_arrival(row: dict) -> dict:
-    """ normalised data avoids the full raw data object being processed by kafka """
+    """Selects the fields required for the Bronze arrival event schema."""
     return {
         "source_prediction_id": row.get("id"),
         "vehicle_id": row.get("vehicleId"),
@@ -113,12 +114,9 @@ def fetch_arrivals() -> list[dict]:
         return response.json()
     
     except requests.exceptions.RequestException as e:
-        # logger.error(f"TFL API request failed. Reason: {e}")
+        logger.error(f"TFL API request failed. Reason: {e}")
         return []
 
-
-
-# --- Entrypoint -----------------------------------------------------------
 
 
 # --- Producer ---
@@ -131,12 +129,17 @@ def run_producer() -> None:
     producer = Producer({"bootstrap.servers": KAFKA_BROKER})
     # headers = _build_headers()
 
-    # logger.info(f"Producer started | Broker: {KAFKA_BROKER} | TFL: {auth_status}")
-
+    logger.info(
+        f"Producer started | Broker: {KAFKA_BROKER} | "
+        f"Topic: {KAFKA_TOPIC_RAW} | Poll interval: {POLL_INTERVAL_SEC}s | "
+        f"Source: TfL line 46 arrivals"
+    )
 
     while True:
         arrivals = fetch_arrivals()
-        print_arrivals(arrivals[:4])
+        logger.info(f"Fetched {len(arrivals)} arrivals from TfL")
+
+        # print_arrivals(arrivals[:4])  debug
     
         for arrival in arrivals:
             record = normalise_arrival(arrival)
@@ -145,8 +148,6 @@ def run_producer() -> None:
             arrival_id = f"{record['line_id']}:{record['naptan_id']}:{record['vehicle_id']}"
             
             # produce() is non-blocking, it puts msg in an internal queue
-          
-
             producer.produce(
                 topic=KAFKA_TOPIC_RAW,
                 key=arrival_id,
@@ -156,10 +157,13 @@ def run_producer() -> None:
             producer.poll(0)         # poll(0) gives Kafka a chance to send what was put in the queue.
 
         producer.flush()
-        # logger.info(f"Sleeping {POLL_INTERVAL_SEC}s until next poll")
+
+        logger.info(f"Published {len(arrivals)} arrivals to Kafka topic {KAFKA_TOPIC_RAW}")
+        logger.info(f"Sleeping {POLL_INTERVAL_SEC}s until next poll")
         time.sleep(POLL_INTERVAL_SEC)
 
 
 
+# --- Entrypoint -----------------------------------------------------------
 if __name__ == "__main__":
     run_producer()

@@ -12,7 +12,8 @@ DATA_DIR = ROOT_DIR / "data"
 
 # --- TFL API ---
 TFL_TOKEN = os.getenv("TFL_TOKEN")  # 
-TFL_URL = "https://api.tfl.gov.uk/line/46/arrivals"     # filtered to Bus Route 46 while prototyping
+TFL_LINE_ID = os.getenv("TFL_LINE_ID", "46")        # filtered to Bus Route 46 while prototyping
+TFL_URL = f"https://api.tfl.gov.uk/line/{TFL_LINE_ID}/arrivals"
 POLL_INTERVAL_SEC = 35              # tfl streams at 30 second intervals
 
 
@@ -39,36 +40,3 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_DIR = ROOT_DIR / "logs"
 
 
-
-# constructing a data lake for streamed data to more clearly understand the data lifecycle, kofka engineering, and the medallion layering architecture.
-    
-# The project ingests and analyses TFL bus arrival prediction data with the intentoin for the pipeline to deliver streamed timing and bus line data issued every 30 seconds. Th eMVP will foucs on a single bus line and seek to investigate complaitns made about the bus line lateness on reddit. The project demonstrates a complete end-to-end pipeline which streams raw data via kafka into validated historical parquet storage.  MVP 2 will focus on reporitng insights in streamlit/powerbi dsashbaords to offer self serving insight reporting using analytical views dbt/PySpark.
-
-# .github
-# data
-# dbt
-# docs
-# ingestion
-# __init__.py
-# consumer.py
-# producer.py
-# orchestration
-# scripts
-# serving
-# tests
-# transforms
-# .dockerignore
-# .env.example
-# .gitignore
-# .python-version
-# Dockerfile
-# Dockerfile.dbt
-# Dockerfile.spark
-# LICENSE
-# README.md
-# ROADMAP.md
-# config.py
-# dependencies_to_add.md
-# docker-compose.yml
-# pyproject.toml
-# uv.lock
