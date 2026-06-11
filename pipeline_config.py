@@ -17,8 +17,8 @@ TFL_URL = f"https://api.tfl.gov.uk/line/{TFL_LINE_ID}/arrivals"
 POLL_INTERVAL_SEC = 35              # tfl streams at 30 second intervals
 
 
-BRONZE_DIR = DATA_DIR / "bronze" / "events"
-SILVER_DIR = DATA_DIR / "silver" / "events"
+BRONZE_DIR = DATA_DIR / "bronze" / "arrivals"
+SILVER_DIR = DATA_DIR / "silver" / "arrivals"
 GOLD_DIR = DATA_DIR / "gold"
 # Checkpoint path
 CHECKPOINT_DIR = DATA_DIR / "checkpoints"
@@ -32,6 +32,14 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:29092")
 KAFKA_TOPIC_RAW = "tfl.bus.arrivals.raw"  # Bronze. Raw data
 KAFKA_TOPIC_DLQ = "?????-????"  # Dead letter queue
 KAFKA_GROUP_ID = "tfl-lake-?????"
+
+
+# --- Partitioning ---
+# Use hive style folder structure in data/bronze year=/month=/day=
+# hive is suitable for Pyspark 
+DATE_PARTITION_FORMAT = "year={year}/month={month:02d}/day={day:02d}"
+
+
 
 
 

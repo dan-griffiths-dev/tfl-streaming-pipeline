@@ -9,7 +9,7 @@ from confluent_kafka import Producer
 import requests
 
 
-from config import (
+from pipeline_config import (
     KAFKA_BROKER,
     KAFKA_TOPIC_RAW,
     LOG_LEVEL,
@@ -95,7 +95,7 @@ def normalise_arrival(row: dict) -> dict:
         "expected_arrival": row.get("expectedArrival"),
         "api_timestamp": row.get("timestamp"),
         "mode_name": row.get("modeName"),
-        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
 # --- TFL API ---

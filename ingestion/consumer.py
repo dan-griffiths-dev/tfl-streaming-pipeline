@@ -8,7 +8,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException
 from loguru import logger
 
 
-from config import (
+from pipeline_config import (
     BRONZE_DIR,
     DATE_PARTITION_FORMAT,
     KAFKA_BROKER,
@@ -52,16 +52,16 @@ def _write_batch_to_bronze(batch: list[dict]) -> None:
     # groups events by partition date
     partitions: dict[str, list[dict]] = {}
 
-    for event in batch:
+    for arrival in batch:
         
-        created_at = event.get("created_at", "")
+        created_at = arrival.get("created_at", "")
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             
             dt = datetime.now(timezone.utc)
             logger.warning(
-                f"Invalid created_at for event {event.get('id')} using current UTC time"
+                f"Invalid created_at for arrival {arrival.get('id')} using current UTC time"
             )
 
         # --- Serialize payload to JSON string ---
@@ -73,26 +73,26 @@ def _write_batch_to_bronze(batch: list[dict]) -> None:
         # sees it. A string always has consistent schema it's just text.
         # In _flatten() deserializes the string back with json.loads().
 
-        event_copy = event.copy()
-        if "payload" in event_copy:
-            event_copy["payload"] = json.dumps(event_copy["payload"])
+        arrival_copy = arrival.copy()
+        if "payload" in arrival_copy:
+            arrival_copy["payload"] = json.dumps(arrival_copy["payload"])
 
         partition_key = DATE_PARTITION_FORMAT.format(
             year=dt.year,
             month=dt.month,
             day=dt.day,
         )
-        partitions.setdefault(partition_key, []).append(event_copy)
+        partitions.setdefault(partition_key, []).append(arrival_copy)
 
     # Write each partition to its own folder
-    for partition_key, events in partitions.items():
+    for partition_key, arrivals in partitions.items():
         output_path = BRONZE_DIR / partition_key
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Convert the list of dicts to a PyArrow table. 
         # PyArrow arranges schema automatically from the data, no need to 
         # define columns manually in Bronze. Raw data is saved as is.
-        table = pa.Table.from_pylist(events)
+        table = pa.Table.from_pylist(arrivals)
 
         # Build a unique filename based on timestamp to avoid overwriting. 
         # If consumer restarts (after crash) it creates a new file next to the old one.
@@ -101,22 +101,22 @@ def _write_batch_to_bronze(batch: list[dict]) -> None:
 
         pq.write_table(table, output_file, compression="snappy")
 
-        logger.info(f"Wrote {len(events)} events -> {output_file}")
+        logger.info(f"Wrote {len(arrivals)} arrivals -> {output_file}")
 
 
 # --- Consumer ---
 def run_consumer() -> None:
     """
-    Main loop. Consumes events from Kafka and writes Bronze.
+    Main loop. Consumes arrivals from Kafka and writes bronze layer to parquet.
 
     Flow:
-    poll() from Kafka -> 
+    poll() from kafka -> 
         collect in batch -> 
             batch full/timeout -> 
-                write Parquet -> 
+                write parquet -> 
                     commit offset
 
-    Note order - write to disk then commit to Kafka.
+    Note order - write to disk then commit to kafka.
     If script crashes after writing but before committing, possible to rerun and write
     the again. If committed then crash occurs, data lost permanently.
     """
@@ -148,6 +148,7 @@ def run_consumer() -> None:
 
             if msg is None:
                 # No data came in, check if timeout flush is needed
+                # TODO
                 pass
             elif msg.error():
                # PARTITION_EOF = end of a partition. New messages still enter.
@@ -158,13 +159,13 @@ def run_consumer() -> None:
                 else:
                     if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
                         logger.warning("Topic not available yet, retrying in 5 sec..")
-                        time.sleep(5)
+                        time.sleep(30)
                     else:
                         raise KafkaException(msg.error())
             else:
                 try:
-                    event = json.loads(msg.value().decode("utf-8"))
-                    batch.append(event)
+                    arrival = json.loads(msg.value().decode("utf-8"))
+                    batch.append(arrival)
                 
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     logger.error(f"Failed to deserialize message: {e}")
