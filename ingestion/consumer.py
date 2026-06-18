@@ -183,9 +183,15 @@ def run_consumer() -> None:
                 
                 # STEP 1: Write to disk (critical step)
                 _write_batch_to_bronze(batch)
-
-                # STEP 2: Commit offset to Kafka (only when data is safe)
-                consumer.commit(asynchronous=False)
+                
+                try:
+                    # STEP 2: Commit offset to Kafka (only when data is safe)
+                    consumer.commit(asynchronous=False)
+                except KafkaException as e:
+                    if e.args[0].code() == KafkaError._ASSIGNMENT_LOST:
+                        logger.warning("Kafka assignment lost during flush. Rejoining group.")
+                    else:
+                        raise e
 
                 batch.clear()
                 last_flush = now

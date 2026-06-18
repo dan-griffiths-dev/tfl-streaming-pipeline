@@ -1,0 +1,33 @@
+[project]
+name = "tfl-bus-pipeline"
+version = "0.1.0"
+description = "Real-time TfL bus arrival data pipeline using Kafka and Parquet"
+requires-python = ">=3.11"
+
+# Prototyping dependencies for running Kafka scripts. 
+dependencies = [
+    "confluent-kafka>=2.3.0",
+    "pyarrow>=15.0.0",
+    "requests>=2.31.0",
+    "loguru>=0.7.2",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.6.0",
+]
+
+[dependency-groups]
+analytics = [
+    "pandas>=2.2.0",
+    "duckdb>=1.5.3",
+    "pyspark>=3.5.0",
+    "dbt-core>=1.11.8",
+    "dbt-duckdb>=1.10.1",
+    "matplotlib>=3.10.8",
+    "seaborn>=0.13.2",
+    "ipykernel>=7.2.0",
+]
+dev = [
+    "black>=24.0.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+]
