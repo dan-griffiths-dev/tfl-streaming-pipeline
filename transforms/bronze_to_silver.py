@@ -3,7 +3,12 @@
 import os
 from pathlib import Path
 import json
+import sys
+
+
 from loguru import logger
+
+from pyspark.sql import SparkSession
 
 from pipeline_config import (
     BRONZE_DIR,
@@ -11,6 +16,16 @@ from pipeline_config import (
     LOG_LEVEL,
     BRONZE_SILVER_CHECKPOINT,
 )
+
+# Force PySpark to use active uv Python environment binary
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+# Hardcode the macOS Homebrew Java 11 path directly into the environment
+# This ensures Spark's JVM finds the correct Java 11 runtime on launch
+mac_java_11_path = "/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home"
+if Path(mac_java_11_path).exists():
+    os.environ["JAVA_HOME"] = mac_java_11_path
 
 # eventually use DuckDB or Pandas for this later, but let's keep imports clean for now.
 
@@ -45,10 +60,10 @@ def load_processed_files() -> set:
         return set()
         
 
-def discover_new_bronze_files(bronze_dir: Path, processed_files: set) -> list[Path]:
+def find_new_bronze_files(bronze_dir: Path, processed_files: set) -> list[Path]:
     """
     Scans the Hive tree for all Parquet files and filters out 
-    any relative paths we have already processed.
+    any relative paths already processed.
     """
 
     logger.info(f"Scanning for new data in: {bronze_dir}")
@@ -70,15 +85,36 @@ def discover_new_bronze_files(bronze_dir: Path, processed_files: set) -> list[Pa
     return new_files
     
 
-
-def read_latest_bronze_batches(bronze_dir: Path):
+def read_latest_bronze_batches(file_paths):
     """
     read the raw Parquet files in hive structure 
-    Goal for later: Load the raw data into memory so we can see what we're working with.
+    Goal for later: Load the raw data into memory to see output
     """
-    logger.info(f"Scanning Bronze directory: {bronze_dir}")
-    # TODO: Implement file system scanning
-    pass
+    logger.info(f"Scanning Bronze directory")
+    
+
+    spark = (
+        SparkSession.builder.master("local[*]")
+        .appName("tfl-bus-data-lake-bronze-to-silver")
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("ERROR")
+
+
+    logger.info("Starting Bronze -> Silver transformation with PySpark")
+    # Note, file paths must be str, ensure not posix object
+    file_paths = [
+        str(path) for path in file_paths
+    ]
+
+    df_bronze = spark.read.parquet(*file_paths)
+
+    return df_bronze
+
+
+
+
 
 
 def flatten_and_cast_schema():
@@ -118,27 +154,22 @@ def main():
     processed_history = load_processed_files()
 
     # Find files that haven't been touched yet
-    files_to_process = discover_new_bronze_files(Path(BRONZE_DIR), processed_history)
-
-    # --- Terminal Checkpoint ---
-    if files_to_process:
-        logger.info("Sample of files found for processing:")
-        for file in files_to_process[:3]:  # Print up to the first 3 files
-            print(f"Found: {file.name} in directory: {file.parent}")
-    else:
-        logger.warning("No new files found to process. Exiting early.")
-        return
-
-    # Rest of the pipeline stubs remain paused for now...
-    logger.success("Step 1 Checkpoint Successful!")
-
-
-
-
-
-
+    files_to_process = find_new_bronze_files(Path(BRONZE_DIR), processed_history)
     
-    logger.success("Transformation pipeline completed successfully!")
+    # Load into Spark
+    df_bronze = read_latest_bronze_batches(files_to_process)
+    
+    # --- Terminal Checkpoint ---
+    logger.info("Printing raw Bronze schema from Spark:")
+    df_bronze.printSchema()
+    
+    logger.info("peekraw rows:")
+    df_bronze.show(5, truncate=False)
+    
+    logger.success("Step 2 Checkpoint Successful! Schema loaded into memory.")
+
+
+    # logger.success("Transformation pipeline completed successfully!")
 
 if __name__ == "__main__":
     main()
