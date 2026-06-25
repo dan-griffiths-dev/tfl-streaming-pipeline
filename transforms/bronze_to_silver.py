@@ -9,6 +9,10 @@ import sys
 from loguru import logger
 
 from pyspark.sql import SparkSession
+import pyspark.sql.functions as F
+from pyspark.sql import Window
+
+
 
 from pipeline_config import (
     BRONZE_DIR,
@@ -17,6 +21,10 @@ from pipeline_config import (
     BRONZE_SILVER_CHECKPOINT,
 )
 
+
+# ==========================================
+# 1. ENVIRONMENT CONFIGURATION (Java 11 Fix)
+# ==========================================
 # Force PySpark to use active uv Python environment binary
 os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
@@ -27,15 +35,9 @@ mac_java_11_path = "/opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Ho
 if Path(mac_java_11_path).exists():
     os.environ["JAVA_HOME"] = mac_java_11_path
 
-# eventually use DuckDB or Pandas for this later, but let's keep imports clean for now.
-
-
-# build checkpoint layer
-# scan the directory, 
-# look at the checkpoint, 
-# identify new files, 
-# print list of new filepaths to the terminal.
-
+# ==========================================
+# 2. DATA PIPELINE LOGIC 
+# ==========================================
 
 def load_processed_files() -> set:
     """
@@ -113,9 +115,48 @@ def read_latest_bronze_batches(file_paths):
     return df_bronze
 
 
+def transform_bronze_to_silver(df_bronze):
+    logger.info("Executing Silver layer transformation pipeline...")
 
+    # Step 1: Type casting
+    df_typed = df_bronze.withColumn(
+        "api_timestamp", F.to_timestamp("api_timestamp")
+    ).withColumn(
+        "expected_arrival", F.to_timestamp("expected_arrival")
+    ).withColumn(
+        "time_to_station", F.col("time_to_station").cast("integer")
+    )
 
+    # Step 2: DEDUPLICATION FIX
+    # We drop updates for the SAME bus at the SAME stop.
+    # This keeps the earliest prediction for that station and eliminates trailing time-slippage noise.
+    df_deduped = df_typed.dropDuplicates(["vehicle_id", "naptan_id"])
 
+    # Step 3: Individual Vehicle Delay Window (Tracking baseline slippage across its life)
+    trip_window = Window.partitionBy("vehicle_id", "trip_id", "line_id").orderBy("api_timestamp")
+    
+    df_with_delays = df_deduped.withColumn(
+        "baseline_expected_arrival", F.first("expected_arrival").over(trip_window)
+    ).withColumn(
+        "delay_minutes",
+        (F.col("expected_arrival").cast("long") - F.col("baseline_expected_arrival").cast("long")) / 60
+    )
+
+    # Step 4: Headway Window (Spacing between different buses on the same day)
+    headway_window = Window.partitionBy(
+        "naptan_id", 
+        "line_name", 
+        F.to_date("expected_arrival")
+    ).orderBy("expected_arrival")
+    
+    df_silver = df_with_delays.withColumn(
+        "previous_bus_arrival", F.lag("expected_arrival", 1).over(headway_window)
+    ).withColumn(
+        "headway_minutes",
+        (F.col("expected_arrival").cast("long") - F.col("previous_bus_arrival").cast("long")) / 60
+    )
+
+    return df_silver
 
 def flatten_and_cast_schema():
     """
@@ -144,32 +185,57 @@ def write_to_silver_lake(silver_dir: Path):
     pass
 
 
+# ==========================================
+# 3. RUNTIME EXECUTION
+# ==========================================
+
 def main():
-    """
-    The orchestrator that glues the steps together.
-    """
+    """     
+    Silver layer cleans, enriches, and where necessary calculate metrics but at the individual record level.
+    """    
     logger.info("Starting Bronze to Silver transformation pipeline...")
     
-    # Load the checkpoint history
+    # load checkpoint history and find new files
     processed_history = load_processed_files()
-
-    # Find files that haven't been touched yet
     files_to_process = find_new_bronze_files(Path(BRONZE_DIR), processed_history)
     
-    # Load into Spark
+    if not files_to_process:
+        logger.warning("No new Bronze files found to process. Exiting.")
+        return
+
+    # Bronze to Silver transform 
     df_bronze = read_latest_bronze_batches(files_to_process)
+    df_silver = transform_bronze_to_silver(df_bronze)
     
-    # --- Terminal Checkpoint ---
-    logger.info("Printing raw Bronze schema from Spark:")
-    df_bronze.printSchema()
+    # Format the terminal Checkpoint Columns
+    columns_to_display = [
+        "line_name",
+        "station_name",
+        "vehicle_id",
+        "expected_arrival",
+        F.round("delay_minutes", 2).alias("delay_min"),
+        F.round("headway_minutes", 2).alias("headway_min")
+    ]
     
-    logger.info("peekraw rows:")
-    df_bronze.show(5, truncate=False)
+    # Target a single highly populated station name to verify window math
+    # get the first valid station name from the dataset dynamically
+    sample_station = df_silver.select("station_name").first()["station_name"]
     
-    logger.success("Step 2 Checkpoint Successful! Schema loaded into memory.")
+    logger.info(f"Filtering peek to sample station: '{sample_station}' to verify headway logic")
+    
+    # sort chronologically by expected arrival ~~ schedule board
+    df_checkpoint = (
+        df_silver
+        .select(columns_to_display)
+        .filter(F.col("station_name") == sample_station)
+        .orderBy("expected_arrival")
+    )
+    
+    logger.info("Peek at Cleaned Silver Metrics (Outliers Removed):")
+    df_checkpoint.show(50, truncate=False)
+    
+    logger.success("Checkpoint Successful!")
 
-
-    # logger.success("Transformation pipeline completed successfully!")
 
 if __name__ == "__main__":
     main()
