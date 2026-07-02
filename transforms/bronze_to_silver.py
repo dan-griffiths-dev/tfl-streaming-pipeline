@@ -105,7 +105,7 @@ def read_latest_bronze_batches(file_paths):
 
 
     logger.info("Starting Bronze -> Silver transformation with PySpark")
-    # Note, file paths must be str, ensure not posix object
+    # Note, change file paths to be str, ensure not posix object
     file_paths = [
         str(path) for path in file_paths
     ]
@@ -158,31 +158,6 @@ def transform_bronze_to_silver(df_bronze):
 
     return df_silver
 
-def flatten_and_cast_schema():
-    """
-    Step 2: Break open nested JSON structures and fix data types.
-    Goal for later: Convert string timestamps to actual Datetime objects, unpack nested arrays.
-    """
-    # TODO: Implement schema transformation
-    pass
-
-
-def deduplicate_records():
-    """
-    Step 3: Remove duplicate streaming records.
-    Goal for later: Ensure each unique vehicle arrival is only counted once based on an ID or timestamp.
-    """
-    # TODO: Implement deduplication logic
-    pass
-
-
-def write_to_silver_lake(silver_dir: Path):
-    """
-    Step 4: Save the pristine data back down to disk.
-    Goal for later: Write out clean Hive-partitioned Parquet files into data/silver/.
-    """
-    # TODO: Implement silver write
-    pass
 
 
 # ==========================================
@@ -191,50 +166,44 @@ def write_to_silver_lake(silver_dir: Path):
 
 def main():
     """     
-    Silver layer cleans, enriches, and where necessary calculate metrics but at the individual record level.
+    Silver layer cleans and calculates metrics.
     """    
     logger.info("Starting Bronze to Silver transformation pipeline...")
     
-    # load checkpoint history and find new files
+    # Load history; find new files
     processed_history = load_processed_files()
     files_to_process = find_new_bronze_files(Path(BRONZE_DIR), processed_history)
     
     if not files_to_process:
-        logger.warning("No new Bronze files found to process. Exiting.")
+        logger.warning("No new bronze files found. Exiting.")
         return
 
-    # Bronze to Silver transform 
+    # transform bronze to silver  
     df_bronze = read_latest_bronze_batches(files_to_process)
     df_silver = transform_bronze_to_silver(df_bronze)
     
-    # Format the terminal Checkpoint Columns
+   
     columns_to_display = [
-        "line_name",
-        "station_name",
-        "vehicle_id",
-        "expected_arrival",
+        "line_name", "station_name", "vehicle_id", "expected_arrival",
         F.round("delay_minutes", 2).alias("delay_min"),
         F.round("headway_minutes", 2).alias("headway_min")
     ]
-    
-    # Target a single highly populated station name to verify window math
-    # get the first valid station name from the dataset dynamically
     sample_station = df_silver.select("station_name").first()["station_name"]
-    
-    logger.info(f"Filtering peek to sample station: '{sample_station}' to verify headway logic")
-    
-    # sort chronologically by expected arrival ~~ schedule board
-    df_checkpoint = (
-        df_silver
-        .select(columns_to_display)
-        .filter(F.col("station_name") == sample_station)
-        .orderBy("expected_arrival")
+    df_checkpoint = df_silver.select(columns_to_display).filter(F.col("station_name") == sample_station).orderBy("expected_arrival")
+    logger.info("Check cleaned silver metrics")
+    # df_checkpoint.show(50, truncate=False)
+ 
+    # write to disk
+    logger.info(f"Writing clean data to silver directory: {SILVER_DIR}")
+    (
+        df_silver.write
+        .mode("append")            
+        .partitionBy("line_name")  
+        .parquet(str(SILVER_DIR))
     )
     
-    logger.info("Peek at Cleaned Silver Metrics (Outliers Removed):")
-    df_checkpoint.show(50, truncate=False)
-    
-    logger.success("Checkpoint Successful!")
+    logger.info("Updating processed file history")    
+    logger.success("Success! Silver layer is ready.")
 
 
 if __name__ == "__main__":
